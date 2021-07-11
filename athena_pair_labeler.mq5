@@ -49,7 +49,7 @@ int test_api_server(string hostip, string port);
 #define HISTORY_LEN 2000
 
 #define TAKE_PROFIT 2
-#define STOP_LOSS -10
+#define STOP_LOSS -5
 #define MAX_TOTAL_PROFIT 300
 #define MAX_TOTAL_LOSS -1000
 //--- special fix for a mql4 bug (ME 934)
@@ -255,7 +255,7 @@ void OnTick()
     PrintFormat("Lot y: %f",lot_size_y);
 
     CharArray arr;
-    action =2;
+    action =0;
     if (action ==2) {
       if (PositionsTotal()>=MAX_ALLOWED_POS-2) return;
       //PrintFormat("Buy at %f",m_symbol_Base.Ask());

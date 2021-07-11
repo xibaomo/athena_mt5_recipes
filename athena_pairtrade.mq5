@@ -24,7 +24,8 @@ string sendInitTime(string timeString);
 int askSymPair(CharArray& arr);
 int sendPairHistX(float &arr[], int len, int n_pts,double tick_size, double tickval);
 float sendPairHistY(float &arr[], int len, int n_pts, double tick_size, double tick_val);
-int sendMinPair(string timestr, double x_ask, double x_bid, double ticksize_x, double tickval_x, double y_ask, double y_bid, double ticksize_y, double tickval_x, int npos, int ntp, int nsl, double& hf);
+int sendMinPair(string timestr, double x_ask, double x_bid, double ticksize_x, double tickval_x, double y_ask, double y_bid, double ticksize_y, double tickval_x, int npos, int ntp, int nsl, 
+                  double profit,double& hf);
 int sendMinPairLabel(int id, int label);
 //int classifyAMinBar(float open,float high, float low, float close, float tickvol, string timeString);
 int registerPairStr(CharArray& arr, bool isSend);
@@ -33,6 +34,7 @@ int getPairedTicketStr(CharArray& arr); // arr.a is tx, arr.b is ty
 int sendCurrentProfit(float profit);
 int sendPositionProfit(float profit);
 int sendSymbolHistory(float &arr[],int len, string sym);
+int sendAccountBalance(float balance);
 int athena_finish();
 int test_api_server(string hostip, string port);
 #import
@@ -46,11 +48,11 @@ int test_api_server(string hostip, string port);
 #define CURRENT_PERIOD PERIOD_M5
 #define STOP_PERCENT 0.05
 #define MAX_ALLOWED_POS 200
-#define HISTORY_LEN 2000
+#define HISTORY_LEN 1000
 
-#define TAKE_PROFIT 2
-#define STOP_LOSS -10
-#define MAX_TOTAL_PROFIT 300
+#define TAKE_PROFIT 30.19
+#define STOP_LOSS -12.53
+#define MAX_TOTAL_PROFIT 3000
 #define MAX_TOTAL_LOSS -1000
 //--- special fix for a mql4 bug (ME 934)
 class CFix { } ExtFix;
@@ -201,6 +203,7 @@ void OnDeinit(const int reason)
 {
 //---
    printf("Pair profit, max: %f, min: %f",g_maxPairProfit, g_minPairProfit);
+   sendAccountBalance(m_account.Balance());
     athena_finish();
     Print("athena_finish called");
 }
@@ -246,8 +249,11 @@ void OnTick()
     //int action = sendMinPair(timestr,px,py,m_symbol_Hedge.Point(), m_symbol_Hedge.TickValue(),hedge_factor);
     double tkx = m_symbol_Base.TickValue();
     double tky = m_symbol_Hedge.TickValue();
+    
+    printf("Sending min pair to backend...");
     int action = sendMinPair(timestr,x_ask,x_bid,m_symbol_Base.TickSize(), m_symbol_Base.TickValue(), y_ask,y_bid,m_symbol_Hedge.TickSize(), m_symbol_Hedge.TickValue(), 
-                 PositionsTotal(),g_ntp,g_nsl,hedge_factor);
+                 PositionsTotal(),g_ntp,g_nsl,m_account.Profit(),hedge_factor);
+    printf("Received decision from backend");
     
     double tmp = 1/fabs(hedge_factor)*lot_size_x;
     tmp*=1.2;
