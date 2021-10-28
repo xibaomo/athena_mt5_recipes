@@ -25,17 +25,8 @@ string sendInitTime(string timeString);
 int askSymPair(CharArray& arr);
 int sendPairHistX(float &arr[], int len, int n_pts,double tick_size, double tickval);
 float sendPairHistY(float &arr[], int len, int n_pts, double tick_size, double tick_val);
-int sendMinPair(string timestr, double x_ask, double x_bid, double ticksize_x, double tickval_x, double y_ask, double y_bid, double ticksize_y, double tickval_x, int npos, int ntp, int nsl, 
-                  double profit,double& hf);
-int sendMinPairLabel(int id, int label);
-int getXYLotSizes(double& lx, double& ly);
-//int classifyAMinBar(float open,float high, float low, float close, float tickvol, string timeString);
-int registerPairStr(CharArray& arr, bool isSend);
-int sendPairProfitStr(CharArray& arr, float profit);
-int getPairedTicketStr(CharArray& arr); // arr.a is tx, arr.b is ty
-int sendCurrentProfit(float profit);
-int sendPositionProfit(float profit);
-int sendSymbolHistory(float &arr[],int len, string sym);
+int requestAction();
+int accumulateMinBar(float open, float high, float low, float close, float tickvol, float new_open, string new_time);
 int sendAccountBalance(float balance);
 int athena_finish();
 int test_api_server(string hostip, string port);
@@ -47,21 +38,19 @@ int test_api_server(string hostip, string port);
 #define SLEEP_MS 10000
 #define ONE_MIN 1000*60
 #define MAX_RAND 32767
-#define CURRENT_PERIOD PERIOD_H1
-#define STOP_PERCENT 0.05
+#define CURRENT_PERIOD PERIOD_M15
 #define MAX_ALLOWED_POS 200
-#define HISTORY_LEN 2000
+#define HISTORY_LEN 1000
 
+#define RETURN_THRESHOLD 3E-3
 #define TAKE_PROFIT 100
 #define STOP_LOSS -100
 #define MAX_TOTAL_PROFIT 300
 #define MAX_TOTAL_LOSS -1000
-//--- special fix for a mql4 bug (ME 934)
-class CFix { } ExtFix;
+
 CPositionInfo  m_position;                   // trade position object
 CTrade         m_trade;                      // trading object
 CSymbolInfo    m_symbol_Base;                // symbol info object
-CSymbolInfo    m_symbol_Hedge;               // symbol info object
 CAccountInfo   m_account;                    // account info wrapper
 
 //--- input parameters
@@ -71,26 +60,12 @@ string port      = "8888";
 
 sinput ulong  m_magic   = 2512554564564;
 string              sym_x                = "EURUSD";
-string              sym_y                = "USDCZK";
 
-int    buy_tp = 2000;
-int    buy_sl  = buy_tp;
-int    sell_tp = buy_tp;
-int    sell_sl = buy_sl;
 double lot_size_x   = 0.05;
-double lot_size_y = lot_size_x;
-float sym_pv_ratio;
-double hedge_factor;
-double InpVirtualProfit = 5000.0;
+
 int max_pos=0;
 string timeBound = "2119.3.22 23:50";
 
-int g_posPrev = 0;
-int g_minbarCount = 0;
-double g_maxPairProfit = -100000;
-double g_minPairProfit = 100000;
-int g_ntp = 0;
-int g_nsl = 0;
 //---
 ulong m_slippage = 10;
 
@@ -100,34 +75,25 @@ ulong m_slippage = 10;
 MqlRates lastRate;
 int OnInit()
 {
-    registerCurrentPositions();
-    checkPairProfit();
-    
     athena_test_dll();
     Print("Connecting api server ...");
     athena_init(Symbol(),hostip,port);
     Print("Api server connected");
     
-    g_posPrev = PositionsTotal();  
+    //g_posPrev = PositionsTotal();  
     
     //string symPair = selectPair(); 
     CharArray arr;
-    askSymPair(arr);
     
     string symPair = CharArrayToString(arr.a);
     
-    sym_x = StringSubstr(symPair,0,6);
-    sym_y = StringSubstr(symPair,7,6);
-    PrintFormat("Sym x: %s, Sym y: %s",sym_x,sym_y);
+    sym_x = Symbol();
+    PrintFormat("Sym: %s",sym_x);
     PrintFormat("LR length: %d",HISTORY_LEN);
     
     if (!m_symbol_Base.Name(sym_x)) {
         PrintFormat("Failed to set symbol name: %s",sym_x);
         return (INIT_FAILED);
-    }
-    if (!m_symbol_Hedge.Name(sym_y)) {
-      PrintFormat("Failed to set symbol name: %s",sym_y);
-      return (INIT_FAILED);
     }
     
     string err_text="";
@@ -142,13 +108,10 @@ int OnInit()
     }
 
     sendPastMinBars(sym_x,HISTORY_LEN,"x");
-    sendPastMinBars(sym_y,HISTORY_LEN,"y");
-    
-    getXYLotSizes(lot_size_x,lot_size_y);
-    
+
     lot_size_x = NormalizeDouble(lot_size_x,2);
-    lot_size_y = NormalizeDouble(lot_size_y,2);
-    PrintFormat("lot size: %f, %f",lot_size_x,lot_size_y);
+
+    PrintFormat("lot size: %f",lot_size_x);
         
     m_trade.SetExpertMagicNumber(m_magic);
 
@@ -192,14 +155,12 @@ int sendPastMinBars(string sym, int histLen, string xy)
     
     if (xy == "x")
       sendPairHistX(data,actualHistLen,MINBAR_SIZE,m_symbol_Base.TickSize(),m_symbol_Base.TickValue());
-    if (xy == "y")
-      hedge_factor = sendPairHistY(data,actualHistLen,MINBAR_SIZE,m_symbol_Hedge.TickSize(),m_symbol_Hedge.TickValue());
+    //if (xy == "y")
+      //hedge_factor = sendPairHistY(data,actualHistLen,MINBAR_SIZE,m_symbol_Hedge.TickSize(),m_symbol_Hedge.TickValue());
 
     string t1 = TimeToString(rates[idx+1].time);
     string t2 = TimeToString(rates[histLen-1].time);
     PrintFormat("Min bars sent: %s to %s",t1,t2);
-    
-    PrintFormat("Hedge factor: %f",hedge_factor);
 
     ArrayFree(rates);
     ArrayFree(data);
@@ -212,8 +173,6 @@ int sendPastMinBars(string sym, int histLen, string xy)
 void OnDeinit(const int reason)
 {
 //---
-   printf("Pair profit, max: %f, min: %f",g_maxPairProfit, g_minPairProfit);
-   sendAccountBalance(m_account.Balance());
     athena_finish();
     Print("athena_finish called");
 }
@@ -223,46 +182,43 @@ void OnDeinit(const int reason)
 void OnTick()
 {
 
-//---
-    checkPairProfit();
-    if (!m_symbol_Base.RefreshRates() || !m_symbol_Hedge.RefreshRates()) {
+    if (!m_symbol_Base.RefreshRates()) {
         Print("Failed to refresh rates\n");
         return;
     }
     if(isTestEnd()) return;
     
-    updateMinMaxPairProfit();
+    //updateMinMaxPairProfit();
 
     static datetime prevBar=0;
+    static int prevHour = -1;   // previous hour
     datetime time_0 = iTime(NULL,CURRENT_PERIOD,0);
     if (time_0 == prevBar)
         return;
     prevBar = time_0;
     string timestr = TimeToString(time_0);
-    
-    //float pft = IsProfit();//---
-    
-   // sendCurrentProfit(pft);
-   g_minbarCount++;
+    int nowHour = getHour(time_0);
 
    float x_ask = m_symbol_Base.Ask();
    float x_bid = m_symbol_Base.Bid();
    float x_spread = m_symbol_Base.Spread();
-   float y_ask = m_symbol_Hedge.Ask();
-   float y_bid = m_symbol_Hedge.Bid();
-   float y_spread = m_symbol_Hedge.Spread();
+
     float px = (m_symbol_Base.Ask()+m_symbol_Base.Bid())*.5;
-    float py = (m_symbol_Hedge.Ask()+m_symbol_Hedge.Bid())*.5;
     PrintFormat("%s, %s open: %f",timestr,sym_x,px);
-    PrintFormat("%s, %s open: %f",timestr,sym_y,py);
     
     //int action = sendMinPair(timestr,px,py,m_symbol_Hedge.Point(), m_symbol_Hedge.TickValue(),hedge_factor);
-    double tkx = m_symbol_Base.TickValue();
-    double tky = m_symbol_Hedge.TickValue();
+    MqlRates lastRate[1];
+    if (CopyRates(sym_x,CURRENT_PERIOD,1,1,lastRate) <= 0) {
+        Print("Failed to get history latest min bar");
+    }
     
     printf("Sending min pair to backend...");
-    int action = sendMinPair(timestr,x_ask,x_bid,m_symbol_Base.TickSize(), m_symbol_Base.TickValue(), y_ask,y_bid,m_symbol_Hedge.TickSize(), m_symbol_Hedge.TickValue(), 
-                 PositionsTotal(),g_ntp,g_nsl,m_account.Profit(),hedge_factor);
+    accumulateMinBar(lastRate[0].open,lastRate[0].high,lastRate[0].low,lastRate[0].close,lastRate[0].tick_volume,px,timestr);
+    
+    if (nowHour == prevHour) return;
+    prevHour = nowHour;
+    printf("Requst decision ...");
+    int action = requestAction();
     printf("Received decision from backend: %d", action);
     
     CharArray arr;
@@ -270,58 +226,23 @@ void OnTick()
       Print("No action");
       return;
     } 
+    
+    if (action==1) {
+      long tx = OpenBuy(m_symbol_Base,lot_size_x);
+      if (tx <=0) {
+         PrintFormat("Failed to place buy position: %s",m_symbol_Base.Name());
+      }
+      return;
+    }
+    
+    if (action==2) {
+      long tx = OpenSell(m_symbol_Base,lot_size_x);
+      if (tx <=0) {
+         PrintFormat("Failed to place buy position: %s",m_symbol_Base.Name());
+      }
+      return;
+    }
 
-    if (action ==2) {
-      if (PositionsTotal()>=MAX_ALLOWED_POS-2) return;
-      //PrintFormat("Buy at %f",m_symbol_Base.Ask());
-      long tx;
-      if (hedge_factor > 0) {
-         tx = OpenBuy(m_symbol_Base,lot_size_x);
-      } else {
-         tx = OpenSell(m_symbol_Base,lot_size_x);
-      }
-      if (tx <= 0) {
-         PrintFormat("Failed to place buy postion: %s",m_symbol_Base.Name());
-         return;
-      }
-      
-      //long ty = OpenBuy(m_symbol_Hedge,lot_size_y,IntegerToString(tx));
-      long ty = OpenSell(m_symbol_Hedge,lot_size_y,IntegerToString(g_minbarCount));
-      if (ty <= 0) {
-         PrintFormat("Failed to place buy postion: %s",m_symbol_Hedge.Name());
-         closePos(tx);
-         return;
-      }
-      PrintFormat("pair tickets: %d vs %d\n",tx,ty);
-
-      registerPair(tx,ty,true);
-   }
-   if (action ==1) {
-      if (PositionsTotal()>=MAX_ALLOWED_POS-2) return;
-      //PrintFormat("Sell at %f",m_symbol_Base.Bid());
-      long tx;
-      if (hedge_factor > 0) {
-         tx = OpenSell(m_symbol_Base,lot_size_x);
-      } else {
-         tx = OpenBuy(m_symbol_Base,lot_size_x);
-      }
-      
-      if (tx <= 0) {
-         PrintFormat("Failed to place sell postion: %s",m_symbol_Base.Name());
-         return;
-      }
-
-      //long ty = OpenSell(m_symbol_Hedge,lot_size_y,IntegerToString(tx));
-      long ty = OpenBuy(m_symbol_Hedge,lot_size_y,IntegerToString(g_minbarCount));
-      
-      if (ty <= 0) {
-         PrintFormat("Failed to place sell postion: %s",m_symbol_Hedge.Name());
-         closePos(tx);
-         return;
-      }
-      PrintFormat("pair tickets: %d vs %d\n",tx,ty);
-      registerPair(tx,ty,true);
-   }
    
    if (action==3) { // close all positions
       PrintFormat("Close all positions");
@@ -329,137 +250,17 @@ void OnTick()
          closeAllPos();
       PrintFormat("All positions closed");
    }
-   if (action == 4 ) {
-      //if(isHavePosType(POSITION_TYPE_BUY))
-        //closeTypeYPairs(POSITION_TYPE_BUY);
-   }
-   if (action == 5) {
-      //if(isHavePosType(POSITION_TYPE_SELL))
-         //closeTypeYPairs(POSITION_TYPE_SELL);
-   }
- 
+
     return;
 }
 
 void OnTrade()
 {
-   HistorySelect(0,TimeCurrent());
-   Print("order placed");
-   int posCurr = PositionsTotal();
-   if (posCurr >= g_posPrev) {
-    g_posPrev = posCurr;
-    return; // new position created
-   }
    
-   sendLastProfit();
 }
 
 long lastTicket=-1;
 //=======================  Private functions ======================================
-
-void sendSymHist(string sym, int histLen)
-{
-    MqlRates rates[];
-    ArrayResize(rates,histLen);
-    if (CopyRates(sym,CURRENT_PERIOD,1,histLen,rates) <= 0) {
-        Print("Failed to get history min bars");
-        return;
-    }
-
-    int actualHistLen = histLen;
-    int idx=0;
-    float data[];
-    ArrayResize(data,actualHistLen*1);
-    int k=0;
-    for (int i=idx; i < histLen; i++) {
-        data[k++] = rates[i].open;
-    }
-    
-    sendSymbolHistory(data,histLen,sym);
-
-    ArrayFree(rates);
-    ArrayFree(data);
-}
-void registerCurrentPositions()
-{
-   for(int i=0; i < PositionsTotal(); i++) {
-      if (!m_position.SelectByIndex(i)) continue;
-      long tx = m_position.Ticket();
-
-      long idx = m_position.Identifier();
-      string sty = m_position.Comment();
-      if (sty == "") continue;
-      long idy = StringToInteger(sty);
-      
-      if(idy <=0) Alert("Weird ticket");
-      registerPair(idx,idy,false);
-   }
-}
-
-void registerPair(long tx, long ty, bool isSend)
-{
-      CharArray arr;
-      string stmp = IntegerToString(tx);
-      StringToCharArray(stmp,arr.a);
-      stmp = IntegerToString(ty);
-      StringToCharArray(stmp,arr.b);
-      registerPairStr(arr,isSend);
-}
-
-long getPairedTicket(long tx)
-{
-   string stx = IntegerToString(tx);
-   CharArray arr;
-   StringToCharArray(stx,arr.a);
-   getPairedTicketStr(arr);
-   string sty = CharArrayToString(arr.b);
-   long ty = StringToInteger(sty);
-   
-   //PrintFormat("paired ticket: %d",ty);
-   
-   return ty;
-}
-void checkPairProfit()
-{
-   double totalProf=0.; 
-   for (int i=PositionsTotal(); i >= 0;i--) {
-      double px=0.,py=0.;
-      long tx,ty;
-      if(!m_position.SelectByIndex(i)) continue;
-      string cmt = m_position.Comment();
-      if(cmt==NULL || cmt == "") { // pos x
-         tx = m_position.Ticket();
-         ty = getPairedTicket(tx);
-         if(ty<0 || !m_position.SelectByTicket(ty)) {closePos(tx);continue;}
-         
-         m_position.SelectByTicket(tx);
-         px = m_position.Profit() + m_position.Commission() + m_position.Swap();
-         totalProf+=px;
-         m_position.SelectByTicket(ty);
-         py = m_position.Profit() + m_position.Commission() + m_position.Swap();
-         totalProf+=py;
-   
-         if (px+py >= TAKE_PROFIT || px+py <= STOP_LOSS) {
-            PrintFormat("Take profit: %f, closing postion pair",px+py); 
-            while(m_position.SelectByTicket(tx))
-               m_trade.PositionClose(tx);
-            while(m_position.SelectByTicket(ty))
-               m_trade.PositionClose(ty);
-               
-            if (px+py>0) g_ntp++;
-            if (px+py<0) g_nsl++;
-         }
-         
-      } else { // pos y
-         ty = m_position.Ticket();
-         tx = getPairedTicket(ty);
-         if(tx<0 || !m_position.SelectByTicket(tx)) closePos(ty);
-      }
-   }
-   if (totalProf >= MAX_TOTAL_PROFIT || totalProf <= MAX_TOTAL_LOSS) {
-      closeAllPos();
-   }
-}
 
 void closePos(long tk) {
    while(m_position.SelectByTicket(tk)) {
@@ -467,87 +268,11 @@ void closePos(long tk) {
    }
 }
 
-long reversePosition(long tk, string cmt="")
-{
-   CSymbolInfo sym;
-   m_position.SelectByTicket(tk);
-   sym.Name(m_position.Symbol());
-   sym.RefreshRates();
-   double lot = m_position.Volume();
-   long tk_new=0;
-   if (m_position.PositionType()==POSITION_TYPE_BUY) {
-      m_trade.PositionClose(tk);
-      //Sleep(ONE_MIN);
-      tk_new = OpenSell(sym,lot,cmt);
-   }
-   if (m_position.PositionType()==POSITION_TYPE_SELL) {
-      m_trade.PositionClose(tk);
-      //Sleep(ONE_MIN);
-      tk_new = OpenBuy(sym,lot,cmt);
-   }
-   
-   return tk_new;
+int getHour(datetime time0) {
+   MqlDateTime mqt;
+   TimeToStruct(time0,mqt);
+   return mqt.hour;
 }
-void sendPairProfit(long idx, long idy, float profit)
-{
-   string stx = IntegerToString(idx);
-   string sty = IntegerToString(idy);
-   CharArray arr;
-   StringToCharArray(stx,arr.a);
-   StringToCharArray(sty,arr.b);
-   sendPairProfitStr(arr,profit);
-}
-
-void sendLastProfit()
-{
-   long tk = HistoryDealGetTicket(HistoryDealsTotal()-1);
-   if (tk == lastTicket) return;
-   lastTicket = tk;
-   switch(HistoryDealGetInteger(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_ENTRY))
-   {
-      case DEAL_ENTRY_IN:
-         if (PositionSelect(HistoryDealGetString(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_SYMBOL)) == true){
-            float pft = HistoryDealGetDouble(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_PROFIT);
-            if (pft>0)
-            sendPositionProfit(pft);
-         }
-         else {
-            float pft = HistoryDealGetDouble(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_PROFIT);
-            sendPositionProfit(pft);
-         }
-         break;
-      case DEAL_ENTRY_OUT:
-         if (PositionSelect(HistoryDealGetString(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_SYMBOL)) == true){
-            float pft = HistoryDealGetDouble(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_PROFIT);
-            sendPositionProfit(pft);
-         }
-         else {
-            float pft = HistoryDealGetDouble(HistoryDealGetTicket(HistoryDealsTotal()-1),DEAL_PROFIT);
-            sendPositionProfit(pft);
-         }
-         break;
-      default:
-         Alert("Reverse position. Not supported");
-         break;
-   }
-}
-//+------------------------------------------------------------------+
-//| Get Time for specified bar index                                 |
-//+------------------------------------------------------------------+
-datetime iTime(const int index,string symbol=NULL,ENUM_TIMEFRAMES timeframe=CURRENT_PERIOD)
-{
-    if(symbol==NULL)
-        symbol=m_symbol_Base.Name();
-    if(timeframe==0)
-        timeframe=Period();
-    datetime Time[1];
-    datetime time=0; // D'1970.01.01 00:00:00'
-    int copied=CopyTime(symbol,timeframe,index,1,Time);
-    if(copied>0)
-        time=Time[0];
-    return(time);
-}
-//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
 //| Refreshes the symbol quotes data                                 |
 //+------------------------------------------------------------------+
@@ -614,8 +339,8 @@ long OpenBuy(CSymbolInfo &symbol, double lotsize, string cmt="")
 
     int digits = (int)SymbolInfoInteger(symbol.Name(),SYMBOL_DIGITS);
     double price = symbol.Ask();
-    double tp = NormalizeDouble(price + STOP_PERCENT*price,digits);
-    double sl = NormalizeDouble(price - STOP_PERCENT*price,digits);
+    double tp = NormalizeDouble(price + RETURN_THRESHOLD*price,digits);
+    double sl = NormalizeDouble(price - RETURN_THRESHOLD*price,digits);
     
 
     if(check_volume_lot!=0.0) {
@@ -669,10 +394,9 @@ long OpenSell(CSymbolInfo &symbol,double lotsize, string cmt="")
 
     int digits = (int)SymbolInfoInteger(symbol.Name(),SYMBOL_DIGITS);
     double price = symbol.Bid();
-    double ask  = symbol.Ask();
     double pv = SymbolInfoDouble(symbol.Name(),SYMBOL_TRADE_TICK_VALUE) * SymbolInfoDouble(symbol.Name(),SYMBOL_POINT);
-    double tp = NormalizeDouble(price - STOP_PERCENT*price,digits);
-    double sl = NormalizeDouble(price + STOP_PERCENT*price,digits);
+    double tp = NormalizeDouble(price - RETURN_THRESHOLD*price,digits);
+    double sl = NormalizeDouble(price + RETURN_THRESHOLD*price,digits);
 
     if(check_volume_lot!=0.0) {
         if(check_volume_lot>=check_open_short_lot) {
@@ -729,39 +453,6 @@ void PrintResult(CTrade &trade,CSymbolInfo &symbol)
     //DebugBreak();
 }
 //+------------------------------------------------------------------+
-float IsProfit()
-{
-    double total_profit=0.0;
-    int num_pos = PositionsTotal();
-    if (max_pos < num_pos) max_pos = num_pos;
-    PrintFormat("Total positions: %d, Max pos: %d",num_pos,max_pos);
-    
-    for(int i=PositionsTotal()-1; i>=0; i--) { // returns the number of current positions
-        if(m_position.SelectByIndex(i))     // selects the position by index for further access to its properties
-            if((m_position.Symbol()==m_symbol_Base.Name() ) && m_position.Magic()==m_magic) {
-                total_profit=total_profit+m_position.Commission()+m_position.Swap()+m_position.Profit();
-            }
-    }
-    PrintFormat("Total profit: %f",total_profit);
-    
-    if(total_profit>InpVirtualProfit) {
-        PrintFormat("Total profit higher than %f, closing all positions...",InpVirtualProfit);
-        for(int j=PositionsTotal()-1; j>=0; j--) { // returns the number of current positions
-            if(m_position.SelectByIndex(j)) {// selects the position by index for further access to its properties
-                if((m_position.Symbol()==m_symbol_Base.Name()) && m_position.Magic()==m_magic) {
-                    datetime t_cur = TimeCurrent();
-                    datetime t_pos = m_position.Time();
-                    if (t_cur - t_pos < 5*60) continue; // close positions older than 10 min
-                    //if (m_position.Profit() < 0.1) continue;
-                    m_trade.PositionClose(m_position.Ticket()); // close a position by the specified symbol
-                    PrintFormat("Position closed: %d",m_position.Ticket());
-                }
-            }
-        }
-        
-    }
-    return total_profit;
-}
 
 void closeMostProfitPos()
 {
@@ -798,33 +489,6 @@ void closeAllPos()
 //+------------------------------------------------------------------+
 //| Close buy y positions                                            |
 //+------------------------------------------------------------------+
-void closeTypeYPairs(ENUM_POSITION_TYPE y_pos_type) {
-   CPositionInfo pos;
-   int NP = PositionsTotal();
-   long tks[];
-   ArrayResize(tks,NP);
-   int k=0;
-   for (int i = 0; i < NP; i++) {
-      if(!pos.SelectByIndex(i)) continue;
-      string cmt = pos.Comment();
-      if(cmt==NULL || cmt=="") continue; // it's x-position
-      // it's y-position
-      if(pos.PositionType() != y_pos_type) continue;
-      long ty = pos.Ticket();
-      long tx = getPairedTicket(ty);
-      
-      tks[k++] = tx;
-      tks[k++] = ty;
-   }
-   
-   for(int i=0; i < k; i++) {
-      while(pos.SelectByTicket(tks[i]))
-         m_trade.PositionClose(tks[i]);
-   }
-   
-   ArrayFree(tks);
-}
-
 bool isHavePosType(ENUM_POSITION_TYPE type) {
    CPositionInfo pos;
    for (int i = 0; i < PositionsTotal(); i++) {
@@ -903,27 +567,3 @@ bool isTestEnd()
    return -1;
  } 
  
-void updateMinMaxPairProfit() {
-
-   for(int i=PositionsTotal()-1; i >=0; i--) {
-      if(!m_position.SelectByIndex(i)) continue;
-      string cmt = m_position.Comment();
-      if(cmt==NULL || cmt=="") continue;
-
-      long ty = m_position.Ticket();
-      long tx = getPairedTicket(ty);
-      
-      double pfx=0,pfy=0;
-      if(m_position.SelectByTicket(tx)) 
-         pfx = m_position.Profit()+m_position.Commission()+m_position.Swap();
-      if(m_position.SelectByTicket(ty)) 
-         pfy = m_position.Profit()+m_position.Commission()+m_position.Swap();
-         
-      double profit = pfx+pfy;
-      
-      if (profit > g_maxPairProfit) 
-         g_maxPairProfit = profit;
-      if(profit < g_minPairProfit)
-         g_minPairProfit = profit;
-   }
-}
