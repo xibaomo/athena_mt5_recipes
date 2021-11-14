@@ -19,15 +19,11 @@ struct CharArray {
 #import "athena_win_apiclient.dll"
 int athena_test_dll();
 int athena_init(string symbol, string hostip, string port);
-//int sendHistoryTicks(float &arr[], int len, string pos_type);
-//int sendHistoryMinBars(float &arr[], int len, int minbar_size);
-string sendInitTime(string timeString);
-int askSymPair(CharArray& arr);
-int sendPairHistX(float &arr[], int len, int n_pts,double tick_size, double tickval);
-float sendPairHistY(float &arr[], int len, int n_pts, double tick_size, double tick_val);
-int requestAction();
-int accumulateMinBar(float open, float high, float low, float close, float tickvol, float new_open, string new_time);
-int sendAccountBalance(float balance);
+int athena_send_history_minbars(double &arr[], int len, int minbar_size);
+int athena_request_action(double);
+int athena_register_position(ulong tk, string timestamp);
+int sendClosedPosInfo(ulong tk, string timestamp, double profit);
+int athena_accumulate_minbar(string date,double open, double high, double low, double close, double tickvol);
 int athena_finish();
 int test_api_server(string hostip, string port);
 #import
@@ -59,7 +55,6 @@ string hostip    = "192.168.150.67";
 string port      = "8888";
 
 sinput ulong  m_magic   = 2512554564564;
-string              sym_x                = "EURUSD";
 
 double lot_size_x   = 0.05;
 
@@ -75,19 +70,11 @@ ulong m_slippage = 10;
 MqlRates lastRate;
 int OnInit()
 {
-    athena_test_dll();
     Print("Connecting api server ...");
     athena_init(Symbol(),hostip,port);
     Print("Api server connected");
     
-    //g_posPrev = PositionsTotal();  
-    
-    //string symPair = selectPair(); 
-    CharArray arr;
-    
-    string symPair = CharArrayToString(arr.a);
-    
-    sym_x = Symbol();
+    string sym_x = Symbol();
     PrintFormat("Sym: %s",sym_x);
     PrintFormat("LR length: %d",HISTORY_LEN);
     
@@ -107,7 +94,7 @@ int OnInit()
         Print("Failed to get history latest min bar");
     }
 
-    sendPastMinBars(sym_x,HISTORY_LEN,"x");
+    sendPastMinBars(sym_x,HISTORY_LEN);
 
     lot_size_x = NormalizeDouble(lot_size_x,2);
 
@@ -127,18 +114,18 @@ int OnInit()
     return(INIT_SUCCEEDED);
 }
 
-int sendPastMinBars(string sym, int histLen, string xy)
+int sendPastMinBars(string sym, int histLen)
 {
     MqlRates rates[];
     ArrayResize(rates,histLen);
-    if (CopyRates(sym,CURRENT_PERIOD,1,histLen,rates) <= 0) {
+    if (CopyRates(sym,CURRENT_PERIOD,2,histLen,rates) <= 0) {
         Print("Failed to get history min bars");
         return -1;
     }
 
     int actualHistLen = histLen;
     int idx=0;
-    float data[];
+    double data[];
     ArrayResize(data,actualHistLen*MINBAR_SIZE);
     int k=0;
     for (int i=idx; i < histLen; i++) {
@@ -153,12 +140,9 @@ int sendPastMinBars(string sym, int histLen, string xy)
     PrintFormat("Latest bar: %f,%f,%f,%f,%f",lastRate.open,lastRate.high,lastRate.low,lastRate.close,lastRate.tick_volume);
     PrintFormat("bars to send: %d",actualHistLen);
     
-    if (xy == "x")
-      sendPairHistX(data,actualHistLen,MINBAR_SIZE,m_symbol_Base.TickSize(),m_symbol_Base.TickValue());
-    //if (xy == "y")
-      //hedge_factor = sendPairHistY(data,actualHistLen,MINBAR_SIZE,m_symbol_Hedge.TickSize(),m_symbol_Hedge.TickValue());
-
-    string t1 = TimeToString(rates[idx+1].time);
+    athena_send_history_minbars(data,actualHistLen,MINBAR_SIZE);
+    
+    string t1 = TimeToString(rates[0].time);
     string t2 = TimeToString(rates[histLen-1].time);
     PrintFormat("Min bars sent: %s to %s",t1,t2);
 
@@ -187,8 +171,6 @@ void OnTick()
         return;
     }
     if(isTestEnd()) return;
-    
-    //updateMinMaxPairProfit();
 
     static datetime prevBar=0;
     static int prevHour = -1;   // previous hour
@@ -204,21 +186,21 @@ void OnTick()
    float x_spread = m_symbol_Base.Spread();
 
     float px = (m_symbol_Base.Ask()+m_symbol_Base.Bid())*.5;
-    PrintFormat("%s, %s open: %f",timestr,sym_x,px);
     
     //int action = sendMinPair(timestr,px,py,m_symbol_Hedge.Point(), m_symbol_Hedge.TickValue(),hedge_factor);
     MqlRates lastRate[1];
-    if (CopyRates(sym_x,CURRENT_PERIOD,1,1,lastRate) <= 0) {
+    if (CopyRates(Symbol(),CURRENT_PERIOD,1,1,lastRate) <= 0) {
         Print("Failed to get history latest min bar");
     }
     
     printf("Sending min pair to backend...");
-    accumulateMinBar(lastRate[0].open,lastRate[0].high,lastRate[0].low,lastRate[0].close,lastRate[0].tick_volume,px,timestr);
+    string tmstr = TimeToString(lastRate[0].time);
+    athena_accumulate_minbar(tmstr,lastRate[0].open,lastRate[0].high,lastRate[0].low,lastRate[0].close,lastRate[0].tick_volume);
     
     if (nowHour == prevHour) return;
     prevHour = nowHour;
     printf("Requst decision ...");
-    int action = requestAction();
+    int action = athena_request_action(px);
     printf("Received decision from backend: %d", action);
     
     CharArray arr;
@@ -227,20 +209,19 @@ void OnTick()
       return;
     } 
     
+    ulong tk = 0;
     if (action==1) {
-      long tx = OpenBuy(m_symbol_Base,lot_size_x);
-      if (tx <=0) {
+      tk = OpenBuy(m_symbol_Base,lot_size_x);
+      if (tk <=0) {
          PrintFormat("Failed to place buy position: %s",m_symbol_Base.Name());
       }
-      return;
     }
     
     if (action==2) {
-      long tx = OpenSell(m_symbol_Base,lot_size_x);
-      if (tx <=0) {
+      tk = OpenSell(m_symbol_Base,lot_size_x);
+      if (tk <=0) {
          PrintFormat("Failed to place buy position: %s",m_symbol_Base.Name());
       }
-      return;
     }
 
    
@@ -250,18 +231,47 @@ void OnTick()
          closeAllPos();
       PrintFormat("All positions closed");
    }
+   if (tk > 0) {
+      athena_register_position(tk,timestr);
+   }
 
     return;
 }
 
 void OnTrade()
 {
-   
+   sendLastDeal();
 }
 
 long lastTicket=-1;
 //=======================  Private functions ======================================
-
+void sendLastDeal() {
+      double last_trade_profit = 0.;
+      static int previous_open_positions = 0;
+        int current_open_positions = PositionsTotal();
+        string ts = TimeToString(TimeCurrent());
+        if(current_open_positions < previous_open_positions)    // a position just got closed. send its ticket and profit to backend
+        {
+                previous_open_positions = current_open_positions;
+                HistorySelect(TimeCurrent()-300, TimeCurrent()); // 5 minutes ago up to now :)
+                int All_Deals = HistoryDealsTotal();
+                if(All_Deals < 1) Print("Some nasty shit error has occurred");
+                ulong temp_Ticket = HistoryDealGetTicket(All_Deals-1); // last deal (should be an DEAL_ENTRY_OUT type)
+                // here check some validity factors of the position-closing deal (symbol, position ID, even MagicNumber if you care...)
+                last_trade_profit = HistoryDealGetDouble(temp_Ticket , DEAL_PROFIT);
+                PrintFormat("position closed. profit: %.2f",last_trade_profit);
+                                
+                sendClosedPosInfo(temp_Ticket,ts,last_trade_profit);
+        }
+        else if(current_open_positions > previous_open_positions) {
+            previous_open_positions = current_open_positions; // a position just got opened.
+            HistorySelect(TimeCurrent()-300, TimeCurrent()); // 5 minutes ago up to now :)
+                int All_Deals = HistoryDealsTotal();
+                if(All_Deals < 1) Print("Some nasty shit error has occurred");
+                ulong temp_Ticket = HistoryDealGetTicket(All_Deals-1);
+            //registerPosition(temp_Ticket,ts);
+        }
+}
 void closePos(long tk) {
    while(m_position.SelectByTicket(tk)) {
       m_trade.PositionClose(tk);
