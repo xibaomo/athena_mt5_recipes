@@ -57,6 +57,7 @@ void OnTrade()
                 ulong temp_Ticket = HistoryDealGetTicket(All_Deals-1); // last deal (should be an DEAL_ENTRY_OUT type)
                 // here check some validity factors of the position-closing deal (symbol, position ID, even MagicNumber if you care...)
                 last_trade_profit = HistoryDealGetDouble(temp_Ticket , DEAL_PROFIT);
+                long ptk = HistoryDealGetInteger(temp_Ticket,DEAL_POSITION_ID);
                 PrintFormat("position closed. profit: %.2f",last_trade_profit);
         }
         else if(current_open_positions > previous_open_positions) previous_open_positions = current_open_positions; // a position just got opened.
@@ -76,7 +77,7 @@ datetime time_0 = iTime(NULL,CURRENT_PERIOD,0);
    if((int)trans.deal_type != (int)trans.order_type){
       ulong tk = trans.deal;
       double profit = HistoryDealGetDouble(tk,DEAL_PROFIT);
-      PrintFormat("position closed. profit: %.2f",profit);
+      PrintFormat("position closed transac. profit: %.2f",profit);
    }
   }
 //+------------------------------------------------------------------+

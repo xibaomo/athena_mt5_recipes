@@ -22,7 +22,7 @@ int athena_init(string symbol, string hostip, string port);
 int athena_send_history_minbars(double &arr[], int len, int minbar_size);
 int athena_request_action(double);
 int athena_register_position(ulong tk, string timestamp);
-int sendClosedPosInfo(ulong tk, string timestamp, double profit);
+int athena_send_closed_position_info(ulong tk, string timestamp, double profit);
 int athena_accumulate_minbar(string date,double open, double high, double low, double close, double tickvol);
 int athena_finish();
 int test_api_server(string hostip, string port);
@@ -243,7 +243,7 @@ void OnTrade()
    sendLastDeal();
 }
 
-long lastTicket=-1;
+//long lastTicket=-1;
 //=======================  Private functions ======================================
 void sendLastDeal() {
       double last_trade_profit = 0.;
@@ -259,9 +259,10 @@ void sendLastDeal() {
                 ulong temp_Ticket = HistoryDealGetTicket(All_Deals-1); // last deal (should be an DEAL_ENTRY_OUT type)
                 // here check some validity factors of the position-closing deal (symbol, position ID, even MagicNumber if you care...)
                 last_trade_profit = HistoryDealGetDouble(temp_Ticket , DEAL_PROFIT);
+                long ptk = HistoryDealGetInteger(temp_Ticket,DEAL_POSITION_ID);
                 PrintFormat("position closed. profit: %.2f",last_trade_profit);
                                 
-                sendClosedPosInfo(temp_Ticket,ts,last_trade_profit);
+                athena_send_closed_position_info(ptk,ts,last_trade_profit);
         }
         else if(current_open_positions > previous_open_positions) {
             previous_open_positions = current_open_positions; // a position just got opened.
