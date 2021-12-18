@@ -27,39 +27,26 @@ int athena_accumulate_minbar(string date,double open, double high, double low, d
 int athena_finish();
 int test_api_server(string hostip, string port);
 #import
-
-#define MAX_POS 200
 #define MINBAR_SIZE 5
 #define MAXTRY 2
 #define SLEEP_MS 10000
-#define ONE_MIN 1000*60
-#define MAX_RAND 32767
-#define CURRENT_PERIOD PERIOD_M15
-#define MAX_ALLOWED_POS 200
-#define HISTORY_LEN 1000
 
-#define RETURN_THRESHOLD 3E-3
-#define TAKE_PROFIT 100
-#define STOP_LOSS -100
-#define MAX_TOTAL_PROFIT 300
-#define MAX_TOTAL_LOSS -1000
+///////////// modifiable parameters ///////////////
+#define CURRENT_PERIOD PERIOD_M15
+#define HISTORY_LEN 1000
+#define RETURN_THRESHOLD 3.5E-3
+string timeBound = "2021.10.12 23:10";
+string hostip    = "192.168.150.67";
+string port      = "8888";
+sinput ulong  m_magic   = 2512554564564;
+string sym_x = "USDDKK";
+double lot_size_x   = 0.1;
+//////////////////////////////////////////////////
 
 CPositionInfo  m_position;                   // trade position object
 CTrade         m_trade;                      // trading object
 CSymbolInfo    m_symbol_Base;                // symbol info object
 CAccountInfo   m_account;                    // account info wrapper
-
-//--- input parameters
-string hostip    = "192.168.150.67";
-//string hostip    = "127.0.0.1";
-string port      = "8888";
-
-sinput ulong  m_magic   = 2512554564564;
-
-double lot_size_x   = 0.05;
-
-int max_pos=0;
-string timeBound = "2119.3.22 23:50";
 
 //---
 ulong m_slippage = 10;
@@ -74,7 +61,7 @@ int OnInit()
     athena_init(Symbol(),hostip,port);
     Print("Api server connected");
     
-    string sym_x = Symbol();
+    
     PrintFormat("Sym: %s",sym_x);
     PrintFormat("LR length: %d",HISTORY_LEN);
     
@@ -193,11 +180,14 @@ void OnTick()
         Print("Failed to get history latest min bar");
     }
     
-    printf("Sending min pair to backend...");
+    
     string tmstr = TimeToString(lastRate[0].time);
+    PrintFormat("Sending min bar to backend: %s",tmstr);
     athena_accumulate_minbar(tmstr,lastRate[0].open,lastRate[0].high,lastRate[0].low,lastRate[0].close,lastRate[0].tick_volume);
+    printf("min bar sent");
     
     if (nowHour == prevHour) return;
+    if (nowHour == 0) return;
     prevHour = nowHour;
     printf("Requst decision ...");
     int action = athena_request_action(px);
@@ -253,16 +243,20 @@ void sendLastDeal() {
         if(current_open_positions < previous_open_positions)    // a position just got closed. send its ticket and profit to backend
         {
                 previous_open_positions = current_open_positions;
-                HistorySelect(TimeCurrent()-300, TimeCurrent()); // 5 minutes ago up to now :)
+                HistorySelect(TimeCurrent()-60*30, TimeCurrent()); // 5 minutes ago up to now :)
                 int All_Deals = HistoryDealsTotal();
                 if(All_Deals < 1) Print("Some nasty shit error has occurred");
-                ulong temp_Ticket = HistoryDealGetTicket(All_Deals-1); // last deal (should be an DEAL_ENTRY_OUT type)
-                // here check some validity factors of the position-closing deal (symbol, position ID, even MagicNumber if you care...)
-                last_trade_profit = HistoryDealGetDouble(temp_Ticket , DEAL_PROFIT);
-                long ptk = HistoryDealGetInteger(temp_Ticket,DEAL_POSITION_ID);
-                PrintFormat("position closed. profit: %.2f",last_trade_profit);
-                                
-                athena_send_closed_position_info(ptk,ts,last_trade_profit);
+                PrintFormat("%d deals in past 5 min",All_Deals);
+                for(int i=0; i < All_Deals; i++) {
+                   ulong temp_Ticket = HistoryDealGetTicket(i); // last deal (should be an DEAL_ENTRY_OUT type)
+      
+                   if (HistoryDealGetInteger(temp_Ticket,DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+                   last_trade_profit = HistoryDealGetDouble(temp_Ticket , DEAL_PROFIT);
+                   long ptk = HistoryDealGetInteger(temp_Ticket,DEAL_POSITION_ID);
+                   PrintFormat("position closed. profit: %.2f",last_trade_profit);
+                                   
+                   athena_send_closed_position_info(ptk,ts,last_trade_profit);
+                 }
         }
         else if(current_open_positions > previous_open_positions) {
             previous_open_positions = current_open_positions; // a position just got opened.
@@ -283,6 +277,11 @@ int getHour(datetime time0) {
    MqlDateTime mqt;
    TimeToStruct(time0,mqt);
    return mqt.hour;
+}
+int getMinute(datetime time0) {
+   MqlDateTime mqt;
+   TimeToStruct(time0,mqt);
+   return mqt.min;
 }
 //+------------------------------------------------------------------+
 //| Refreshes the symbol quotes data                                 |
@@ -342,7 +341,7 @@ bool CheckVolumeValue(double volume,string &error_description)
 //+------------------------------------------------------------------+
 //| Open Buy position                                                |
 //+------------------------------------------------------------------+
-long OpenBuy(CSymbolInfo &symbol, double lotsize, string cmt="")
+ulong OpenBuy(CSymbolInfo &symbol, double lotsize, string cmt="")
 {
     double check_open_long_lot=lotsize;
 //--- check volume before OrderSend to avoid "not enough money" error (CTrade)
@@ -384,20 +383,20 @@ long OpenBuy(CSymbolInfo &symbol, double lotsize, string cmt="")
         } else {
             Print(__FUNCTION__,", ERROR: method CheckVolume (",DoubleToString(check_volume_lot,2),") ",
                   "< \"Lots\" (",DoubleToString(check_open_long_lot,2),")");
-            return -1;
+            return 0;
         }
     } else {
         Print(__FUNCTION__,", ERROR: method CheckVolume returned the value of \"0.0\"");
-        return -1;
+        return 0;
     }
 //---r
-   return -1;
+   return 0;
 }
 
 //+------------------------------------------------------------------+
 //| Open Sell position                                               |
 //+------------------------------------------------------------------+
-long OpenSell(CSymbolInfo &symbol,double lotsize, string cmt="")
+ulong OpenSell(CSymbolInfo &symbol,double lotsize, string cmt="")
 {
     double check_open_short_lot=lotsize;
 //--- check volume before OrderSend to avoid "not enough money" error (CTrade)
@@ -437,14 +436,14 @@ long OpenSell(CSymbolInfo &symbol,double lotsize, string cmt="")
         } else {
             Print(__FUNCTION__,", ERROR: method CheckVolume (",DoubleToString(check_volume_lot,2),") ",
                   "< \"Lots\" (",DoubleToString(check_open_short_lot,2),")");
-            return -1;
+            return 0;
         }
     } else {
         Print(__FUNCTION__,", ERROR: method CheckVolume returned the value of \"0.0\"");
-        return -1;
+        return 0;
     }
 //---
-   return -1;
+   return 0;
 }
 
 //+------------------------------------------------------------------+
@@ -465,23 +464,6 @@ void PrintResult(CTrade &trade,CSymbolInfo &symbol)
 }
 //+------------------------------------------------------------------+
 
-void closeMostProfitPos()
-{
-   double max_profit = 0.;
-   int ticket = -1;
-   for (int i = PositionsTotal()-1; i>=0; i--) {
-      if (m_position.SelectByIndex(i)) {
-         if (m_position.Profit() > max_pos) {
-            max_profit = m_position.Profit();
-            ticket = m_position.Ticket();
-         }
-      }
-   }
-   if (ticket >= 0) {
-      m_trade.PositionClose(ticket);
-      PrintFormat("Position closed. Profit: %f, ticket %d",max_profit,ticket);
-   }
-}
 //+------------------------------------------------------------------+
 //| Close all positions                                              |
 //+------------------------------------------------------------------+
